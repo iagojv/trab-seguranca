@@ -1,0 +1,11 @@
+.vagrant/
+*.log
+.vagrant/**
+*.key
+*.pem
+shared/attacker_results/*
+shared/victim_logs/*
+.idea/
+.vscode/
+__pycache__/
+.DS_Store
