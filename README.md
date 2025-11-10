@@ -312,3 +312,231 @@ rm -rf .vagrant
 2. **Não suba chaves privadas ou evidências sensíveis; adicione `.gitignore` para `shared/`, se necessário.**
 
 ---
+
+## Vulnerabilidades Não Exploradas — Descrições, Vetores e Mitigação
+
+### 1) Serviços Desnecessários Expostos (ex.: FTP, Telnet, RPC)
+
+**Descrição:**  
+Serviços legados ou em desuso podem rodar com configurações inseguras, abrindo portas desnecessárias para o atacante.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Identificar serviços abertos
+sudo ss -tuln
+sudo nmap -sV 192.168.56.10
+```
+Se `vsftpd` estiver ativo e mal configurado, um atacante pode se conectar, realizar uploads/downloads ou explorar vulnerabilidades conhecidas da versão.
+
+**Impacto:**  
+Exposição de credenciais, exfiltração de arquivos, ponto de apoio para movimentação lateral.
+
+**Detecção / Evidência:**  
+Logs de conexão (`/var/log/syslog`, `/var/log/auth.log`), saída de `ss`/`nmap`, pacotes de rede suspeitos.
+
+**Mitigação no Hardening:**  
+O script de hardening atual não remove serviços automaticamente, mas a política de redução da superfície é indireta — o `ufw` nega conexões inbound por padrão, reduzindo a exposição.  
+**Recomendação:** Adapte `hardening_victim.sh` para desabilitar/remover serviços desnecessários:
+```sh
+sudo systemctl disable --now vsftpd || true
+sudo apt-get remove --purge -y vsftpd || true
+```
+Inclua essas linhas no hardening para fechar esse vetor.
+
+**Medidas adicionais:**  
+Inventário de serviços, lista branca (only necessary), monitoramento contínuo e lockdown de portas via firewall.
+
+---
+
+### 2) Pacotes Desatualizados / Vulnerabilidades Conhecidas (CVE)
+
+**Descrição:**  
+Versões antigas de aplicativos ou serviços (por exemplo, OpenSSH, libc, webservers) podem ter exploits públicos divulgados.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Descobrir versões
+sudo apt list --installed | grep openssh
+vagrant ssh attacker -c "nmap -sV 192.168.56.10"
+```
+Buscar CVEs públicas para a versão e tentar PoC (somente em laboratório).
+
+**Impacto:**  
+Execução remota de código, escalonamento de privilégio, persistência do atacante.
+
+**Detecção / Evidência:**  
+Logs de crashes, segfaults, conexões anômalas; vulnerabilidades identificadas por scanners (nikto, nessus).
+
+**Mitigação no Hardening:**  
+O `hardening_victim.sh` instala `unattended-upgrades` para aplicar atualizações automáticas, reduzindo a janela de exposição.  
+O script também realiza upgrade forçado via `apt-get upgrade`.
+
+**Medidas adicionais:**  
+Gerenciamento de patches, scanners de vulnerabilidade periódicos, inventário de softwares.
+
+---
+
+### 3) Permissões Incorretas de Arquivos Sensíveis (ex.: relatorio_institucional.txt)
+
+**Descrição:**  
+Arquivos sensíveis com permissões abertas (644 ou 777) permitem leitura/alteração por usuários não autorizados.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Listar permissões do arquivo
+ls -l /home/professor/relatorio_institucional.txt
+```
+Se o atacante tiver acesso à conta ou via serviço mal configurado, pode ler/alterar.
+
+**Impacto:**  
+Vazamento de informações, adulteração de evidências, danos à reputação.
+
+**Detecção / Evidência:**  
+Alterações de timestamps, diffs, logs de alteração; hash SHA256 antes e depois evidenciam manipulação.
+
+**Mitigação no Hardening:**  
+O hardening não altera permissões de arquivos individuais por padrão, mas recomenda restringir acessos.  
+Inclua no script:
+```sh
+sudo chown professor:professor /home/professor/relatorio_institucional.txt
+sudo chmod 600 /home/professor/relatorio_institucional.txt
+```
+Garante acesso apenas ao proprietário do arquivo.
+
+**Medidas adicionais:**  
+Controle de integridade (AIDE/Tripwire), backups assinados, políticas DLP.
+
+---
+
+### 4) SSH: Ciphers / KEX / MAC Fracos e Configuração Insegura
+
+**Descrição:**  
+Algoritmos de criptografia fracos permitem downgrade attacks ou exploração de vulnerabilidades conhecidas.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Auditar configurações
+sudo sshd -T | grep -E 'ciphers|macs|kex'
+
+# Forçar cipher antigo (em ambiente de teste)
+ssh -o Ciphers=aes128-cbc professor@192.168.56.10
+```
+Se conectar, indica suporte a cipher fraca.
+
+**Impacto:**  
+Facilita interceptação (se o key exchange for fraco), ataques man-in-the-middle.
+
+**Mitigação no Hardening:**  
+O hardening foca em `PasswordAuthentication no`, `PermitRootLogin no`, fail2ban e ufw. Para fechar este vetor, inclua obrigatoriedade de ciphers fortes no `sshd_config`:
+```sh
+echo 'Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com' | sudo tee -a /etc/ssh/sshd_config
+echo 'KexAlgorithms curve25519-sha256@libssh.org' | sudo tee -a /etc/ssh/sshd_config
+echo 'MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com' | sudo tee -a /etc/ssh/sshd_config
+sudo systemctl restart ssh
+```
+
+**Medidas adicionais:**  
+Manter OpenSSH atualizado, auditorias regulares, testes de compatibilidade (balanceamento segurança/compatibilidade).
+
+---
+
+### 5) Falta de Logging Remoto / Integridade dos Logs
+
+**Descrição:**  
+Logs apenas locais podem ser apagados ou adulterados por um atacante com acesso root — ausência de cópia remota enfraquece a cadeia de custódia.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Atacante trunca ou edita log
+sudo truncate -s 0 /var/log/auth.log
+```
+Ou edita entradas do log para ocultar rastros.
+
+**Impacto:**  
+Perda de evidências, manipulação de provas, dificultando a investigação.
+
+**Mitigação no Hardening:**  
+Já há cópia de logs para `shared/` (host), formando mitigação manual.  
+Para reforçar:
+- Configurar `rsyslog` ou `syslog-ng` para enviar logs críticos ao host ou servidor remoto.
+- Habilitar `auditd` para eventos sensíveis:
+```sh
+# Exemplo (requer listener no host)
+# Adicionar em /etc/rsyslog.conf: *.* @<host-ip>:514
+apt-get install -y auditd
+systemctl enable --now auditd
+```
+
+**Medidas adicionais:**  
+WORM storage para logs, assinatura/hash periódico (append-only), integração com SIEM.
+
+---
+
+### 6) Falta de Segmentação de Rede (Rede Plana do Laboratório)
+
+**Descrição:**  
+Rede do laboratório na mesma VLAN facilita movimentos laterais e acessos indevidos entre hosts.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Scan na rede interna
+nmap -sV 192.168.56.0/24
+```
+Comprometendo a victim, o atacante pode tentar pivô para outros hosts.
+
+**Impacto:**  
+Escalonamento do incidente, comprometimento em cadeia de outros sistemas.
+
+**Mitigação no Hardening:**  
+Mitigação local não resolve segmentação — é requisito de arquitetura.  
+**Recomende no relatório:**
+- Segmentação dos ambientes em VLANs.
+- ACLs entre segmentos.
+- Isolamento de serviços críticos (DB, AD) em redes separadas.
+
+**Medidas adicionais:**  
+Firewalls entre segmentos, jump hosts com MFA, Zero Trust para serviços sensíveis.
+
+---
+
+### 7) Exposição de Credenciais em Scripts/Configurações (Hard-Coded Secrets)
+
+**Descrição:**  
+Scripts de provisionamento podem conter senhas em texto claro (ex.: `echo "professor:prof123" | chpasswd`), postura insegura para produção.
+
+**Caminho de Exploração (PoC didática):**
+```sh
+# Extrair credenciais em texto claro
+grep -R "prof123" -n .
+```
+Facilita comprometimento de contas por quem acessar o repo ou disco da VM.
+
+**Impacto:**  
+Comprometimento rápido de contas e senhas.
+
+**Mitigação no Hardening:**  
+No laboratório, o uso de credenciais fracas foi intencional para fins didáticos.  
+No relatório, enfatize que em produção **nunca** se deve embutir credenciais em código.
+
+**Boas práticas:**
+- Uso de variáveis de ambiente seguras.
+- Vaults (ex.: HashiCorp Vault).
+- Prompts interativos para inserção de senhas.
+- Rotação automática de senhas e uso de autenticação por chave.
+
+---
+
+## Conclusão desta Seção
+
+Cada vulnerabilidade acima representa vetores de ataque reais — muitos simples de explorar quando combinados (por exemplo: serviços expostos + credenciais fracas).  
+O `hardening_victim.sh` cobre parte dos vetores (SSH sem senha, bloqueio root, fail2ban, ufw, atualizações automáticas), mas **não é solução única:** é essencial complementar o script com os controles adicionais listados acima:  
+- Remoção de serviços desnecessários;
+- Ciphers fortes no SSH;
+- Envio remoto e integridade de logs;
+- Permissões restritas de arquivos;
+- Inventário e atualização periódica de pacotes;
+- Segmentação de rede.
+
+Recomenda-se revisar e ampliar continuamente o escopo das medidas conforme novas ameaças e requisitos de compliance.
+
+---
