@@ -64,6 +64,7 @@ seguranca-trabalho/
 - VirtualBox compatível
 - Terminal (Linux/macOS/WSL recomendado)
 - Estar na pasta raiz do projeto ao rodar os comandos abaixo
+- Rodar o comando chmod +x presentantion/run_demo.sh
 
 ---
 
